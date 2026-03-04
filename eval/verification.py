@@ -1,4 +1,4 @@
-"""Helper for evaluation on the Labeled Faces in the Wild dataset 
+"""Helper for evaluation on the Labeled Faces in the Wild dataset
 """
 
 # MIT License
@@ -28,8 +28,11 @@ import datetime
 import os
 import pickle
 
-import mxnet as mx
 import numpy as np
+# mxnet<=1.x still references np.bool, removed in newer NumPy.
+if "bool" not in np.__dict__:
+    np.bool = bool  # type: ignore[attr-defined]
+import mxnet as mx
 import sklearn
 import torch
 from mxnet import ndarray as nd
@@ -407,3 +410,4 @@ def dumpR(data_set,
 #     else:
 #         model = nets[0]
 #         dumpR(ver_list[0], model, args.batch_size, args.target)
+

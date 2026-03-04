@@ -24,7 +24,7 @@ torch.backends.cudnn.benchmark = True
 
 def main(args):
     dist.init_process_group(backend='nccl', init_method='env://')
-    local_rank = args.local_rank
+    ocal_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -131,7 +131,7 @@ def main(args):
         cur_epoch = cfg.num_epoch - int(cfg.num_epoch / total_step * rem_steps)
         logging.info("resume from estimated epoch {}".format(cur_epoch))
         logging.info("remaining steps {}".format(rem_steps))
-        
+
         start_epoch = cur_epoch
         scheduler_backbone.last_epoch = cur_epoch
 

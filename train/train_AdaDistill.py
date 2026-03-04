@@ -8,11 +8,12 @@ import torch.distributed as dist
 import torch.nn.functional as F
 from torch.nn.parallel.distributed import DistributedDataParallel
 import torch.utils.data.distributed
+from torch.cuda.amp import GradScaler, autocast
 from torch.nn.utils import clip_grad_norm_
 from torch.nn import CrossEntropyLoss
 from backbones.mobilefacenet import MobileFaceNet
 from utils import losses
-from config.config import config as cfg
+from config.config_adadistill import config as cfg
 from utils.dataset import MXFaceDataset, DataLoaderX,FaceDatasetFolder
 from utils.utils_callbacks import CallBackVerification, CallBackLogging, CallBackModelCheckpoint
 from utils.utils_logging import AverageMeter, init_logging
@@ -23,7 +24,7 @@ torch.backends.cudnn.benchmark = True
 
 def main(args):
     dist.init_process_group(backend='nccl', init_method='env://')
-    local_rank = args.local_rank
+    local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     rank = dist.get_rank()
     world_size = dist.get_world_size()
@@ -93,9 +94,21 @@ def main(args):
     backbone.train()
     # get header
     if cfg.loss == "ArcFace":
-        header = losses.AdaptiveAArcFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m,  adaptive_alpha=cfg.adaptive_alpha).to(local_rank)
+        header = losses.AdaptiveAArcFace(
+            in_features=cfg.embedding_size,
+            out_features=cfg.num_classes,
+            s=cfg.s,
+            m=cfg.m,
+            adaptive_weighted_alpha=cfg.adaptive_alpha,
+        ).to(local_rank)
     elif cfg.loss == "CosFace":
-        header = losses.AdaptiveACosFace(in_features=cfg.embedding_size, out_features=cfg.num_classes, s=cfg.s, m=cfg.m, adaptive_alpha=cfg.adaptive_alpha).to(
+        header = losses.AdaptiveACosFace(
+            in_features=cfg.embedding_size,
+            out_features=cfg.num_classes,
+            s=cfg.s,
+            m=cfg.m,
+            adaptive_weighted_alpha=cfg.adaptive_alpha,
+        ).to(
             local_rank)
     else:
         print("Header not implemented")
@@ -113,17 +126,19 @@ def main(args):
         optimizer=opt_backbone, lr_lambda=cfg.lr_func)
 
     criterion = CrossEntropyLoss()
+    scaler = GradScaler(enabled=cfg.fp16)
 
     start_epoch = 0
     total_step = int(len(trainset) / cfg.batch_size / world_size * cfg.num_epoch)
     if rank == 0: logging.info("Total Step is: %d" % total_step)
+    if rank == 0: logging.info("AMP enabled: %s", cfg.fp16)
 
     if cfg.global_step:
         rem_steps = (total_step - cfg.global_step)
         cur_epoch = cfg.num_epoch - int(cfg.num_epoch / total_step * rem_steps)
         logging.info("resume from estimated epoch {}".format(cur_epoch))
         logging.info("remaining steps {}".format(rem_steps))
-        
+
         start_epoch = cur_epoch
         scheduler_backbone.last_epoch = cur_epoch
 
@@ -144,14 +159,24 @@ def main(args):
             global_step += 1
             img = img.cuda(local_rank, non_blocking=True)
             label = label.cuda(local_rank, non_blocking=True)
-            features = backbone(img)
-            with torch.no_grad():
-                features_t=backbone_t(img)
-            thetas ,target_logit_mean, lma, cos_theta_tmp = header(F.normalize(features),F.normalize(features_t) , label)
-            loss_v= criterion(thetas, label)
-            loss_v.backward()
-            clip_grad_norm_(backbone.parameters(), max_norm=5, norm_type=2)
-            opt_backbone.step()
+            with autocast(enabled=cfg.fp16):
+                features = backbone(img)
+                with torch.no_grad():
+                    features_t = backbone_t(img)
+                thetas, target_logit_mean, lma, cos_theta_tmp = header(
+                    F.normalize(features), F.normalize(features_t), label
+                )
+                loss_v = criterion(thetas, label)
+            if cfg.fp16:
+                scaler.scale(loss_v).backward()
+                scaler.unscale_(opt_backbone)
+                clip_grad_norm_(backbone.parameters(), max_norm=5, norm_type=2)
+                scaler.step(opt_backbone)
+                scaler.update()
+            else:
+                loss_v.backward()
+                clip_grad_norm_(backbone.parameters(), max_norm=5, norm_type=2)
+                opt_backbone.step()
             opt_backbone.zero_grad()
             loss.update(loss_v.item(), 1)
             callback_logging(global_step, loss, epoch ,target_logit_mean, lma, cos_theta_tmp)
