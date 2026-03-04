@@ -72,3 +72,17 @@ This project is licensed under the terms of the Attribution-NonCommercial-ShareA
 International (CC BY-NC-SA 4.0) license. 
 Copyright (c) 2024 Fraunhofer Institute for Computer Graphics Research IGD Darmstadt
 ```
+
+## Additional Note by nakajmiya
+
+- The project setup has been updated to run in a Docker environment.
+- The following directory structure is required at runtime.
+
+```text
+/workspace/
+├── AdaDistill
+├── dataset
+...
+```
+
+- Place the `AdaDistill` repository under `/workspace/AdaDistill` and datasets under `/workspace/dataset`.
